@@ -24,13 +24,18 @@ active_connections = {}  # username -> websocket
 
 @app.get("/")
 async def get():
-    with open("index.html", "r") as f:
+    with open("index.html", "r", encoding="utf-8") as f:
         return HTMLResponse(f.read())
 
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     await websocket.accept()
     active_connections[username] = websocket
+
+    # -------- BROADCAST ONLINE --------
+    for user, ws in active_connections.items():
+        if user != username:
+            await ws.send_text(f"STATUS|{username}|online")
 
     # -------- SEND CHAT HISTORY --------
     cursor.execute("""
@@ -56,16 +61,16 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
         SELECT id, sender FROM messages
         WHERE receiver = ? AND read = 0
     """, (username,))
-    unread_messages = cursor.fetchall()
+    unread = cursor.fetchall()
 
-    if unread_messages:
+    if unread:
         cursor.execute("""
             UPDATE messages SET read = 1
             WHERE receiver = ? AND read = 0
         """, (username,))
         conn.commit()
 
-        for msg_id, sender in unread_messages:
+        for msg_id, sender in unread:
             if sender in active_connections:
                 await active_connections[sender].send_text(f"READ|{msg_id}")
 
@@ -108,23 +113,25 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 msg_id = cursor.lastrowid
                 formatted = f"MSG|{msg_id}|{username}|{receiver}|{message}|✔"
 
-                # Send to receiver
+                # Receiver online → instant read
                 if receiver in active_connections:
                     await active_connections[receiver].send_text(formatted)
 
-                    # Mark as read immediately
                     cursor.execute(
                         "UPDATE messages SET read = 1 WHERE id = ? AND read = 0",
                         (msg_id,)
                     )
                     conn.commit()
 
-                    # Notify sender
                     await websocket.send_text(f"READ|{msg_id}")
 
-                # Always send message to sender
+                # Always send to sender
                 await websocket.send_text(formatted)
 
     except:
         if username in active_connections:
             del active_connections[username]
+
+            # -------- BROADCAST OFFLINE --------
+            for ws in active_connections.values():
+                await ws.send_text(f"STATUS|{username}|offline")
