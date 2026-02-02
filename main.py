@@ -37,6 +37,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
         SELECT id, sender, receiver, message, read
         FROM messages
         WHERE sender = ? OR receiver = ?
+        ORDER BY id
     """, (username, username))
 
     for msg_id, sender, receiver, message, read in cursor.fetchall():
@@ -50,38 +51,43 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 f"MSG|{msg_id}|{sender}|{receiver}|{message}|"
             )
 
-    # -------- MARK AS READ ON CONNECT --------
+    # -------- MARK UNREAD AS READ ON CONNECT --------
     cursor.execute("""
         SELECT id, sender FROM messages
         WHERE receiver = ? AND read = 0
     """, (username,))
-    unread = cursor.fetchall()
+    unread_messages = cursor.fetchall()
 
-    cursor.execute("""
-        UPDATE messages SET read = 1
-        WHERE receiver = ?
-    """, (username,))
-    conn.commit()
+    if unread_messages:
+        cursor.execute("""
+            UPDATE messages SET read = 1
+            WHERE receiver = ? AND read = 0
+        """, (username,))
+        conn.commit()
 
-    for msg_id, sender in unread:
-        if sender in active_connections:
-            await active_connections[sender].send_text(f"READ|{msg_id}")
+        for msg_id, sender in unread_messages:
+            if sender in active_connections:
+                await active_connections[sender].send_text(f"READ|{msg_id}")
 
     try:
         while True:
             data = await websocket.receive_text()
             parts = data.split("|")
+
+            if not parts:
+                continue
+
             action = parts[0]
 
             # -------- TYPING --------
-            if action == "TYPE":
+            if action == "TYPE" and len(parts) >= 2:
                 receiver = parts[1]
                 if receiver in active_connections:
                     await active_connections[receiver].send_text(
                         f"TYPING|{username}"
                     )
 
-            elif action == "STOP":
+            elif action == "STOP" and len(parts) >= 2:
                 receiver = parts[1]
                 if receiver in active_connections:
                     await active_connections[receiver].send_text(
@@ -89,7 +95,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     )
 
             # -------- MESSAGE --------
-            elif action == "MSG":
+            elif action == "MSG" and len(parts) >= 3:
                 receiver = parts[1]
                 message = parts[2]
 
@@ -100,30 +106,24 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 conn.commit()
 
                 msg_id = cursor.lastrowid
-
                 formatted = f"MSG|{msg_id}|{username}|{receiver}|{message}|✔"
 
+                # Send to receiver
                 if receiver in active_connections:
-                    # Send message to receiver
                     await active_connections[receiver].send_text(formatted)
 
-                    # Mark message as read immediately
+                    # Mark as read immediately
                     cursor.execute(
-                        "UPDATE messages SET read = 1 WHERE id = ?",
+                        "UPDATE messages SET read = 1 WHERE id = ? AND read = 0",
                         (msg_id,)
                     )
                     conn.commit()
 
-                    # Notify sender that message is read
+                    # Notify sender
                     await websocket.send_text(f"READ|{msg_id}")
 
-                else:
-                    # Receiver offline → only sender sees single tick
-                    pass
-
-                # Always send message back to sender
+                # Always send message to sender
                 await websocket.send_text(formatted)
-
 
     except:
         if username in active_connections:
