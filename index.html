@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Private Chat</title>
+    <style>
+        body {
+            font-family: Arial;
+            background: #f0f2f5;
+        }
+
+        .chat-box {
+            width: 400px;
+            margin: 20px auto;
+            background: white;
+            padding: 10px;
+            border-radius: 8px;
+        }
+
+        .messages {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+        }
+
+        .msg {
+            margin: 5px 0;
+            padding: 8px;
+            border-radius: 6px;
+            max-width: 70%;
+        }
+
+        .me {
+            background: #dcf8c6;
+            margin-left: auto;
+            text-align: right;
+        }
+
+        .other {
+            background: #fff;
+            border: 1px solid #ddd;
+        }
+
+        input, button {
+            width: 100%;
+            margin-top: 5px;
+            padding: 8px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="chat-box">
+    <h3>Private Chat</h3>
+
+    <input id="username" placeholder="Your username">
+    <button onclick="connect()">Join</button>
+
+    <input id="receiver" placeholder="Chat with (username)">
+
+    <div class="messages" id="messages"></div>
+
+    <input id="message" placeholder="Type message..." disabled>
+    <button onclick="sendMessage()" id="sendBtn" disabled>Send</button>
+</div>
+
+<script>
+    let ws;
+    let myName = "";
+
+    function connect() {
+        myName = document.getElementById("username").value.trim();
+
+        if (!myName) {
+            alert("Please enter a username");
+            return;
+        }
+
+        const protocol = location.protocol === "https:" ? "wss" : "ws";
+        ws = new WebSocket(`${protocol}://${location.host}/ws/${myName}`);
+
+        ws.onmessage = function(event) {
+            const messages = document.getElementById("messages");
+            const div = document.createElement("div");
+            div.classList.add("msg");
+
+            if (event.data.startsWith(myName)) {
+                div.classList.add("me");
+            } else {
+                div.classList.add("other");
+            }
+
+            div.textContent = event.data;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        };
+
+        ws.onopen = function () {
+            document.getElementById("message").disabled = false;
+            document.getElementById("sendBtn").disabled = false;
+        };
+    }
+
+    function sendMessage() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            alert("Not connected");
+            return;
+        }
+
+        const receiver = document.getElementById("receiver").value.trim();
+        const message = document.getElementById("message").value.trim();
+
+        if (!receiver || !message) return;
+
+        ws.send(receiver + "|" + message);
+        document.getElementById("message").value = "";
+    }
+</script>
+
+</body>
+</html>
