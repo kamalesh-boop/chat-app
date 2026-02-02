@@ -104,9 +104,26 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 formatted = f"MSG|{msg_id}|{username}|{receiver}|{message}|✔"
 
                 if receiver in active_connections:
+                    # Send message to receiver
                     await active_connections[receiver].send_text(formatted)
 
+                    # Mark message as read immediately
+                    cursor.execute(
+                        "UPDATE messages SET read = 1 WHERE id = ?",
+                        (msg_id,)
+                    )
+                    conn.commit()
+
+                    # Notify sender that message is read
+                    await websocket.send_text(f"READ|{msg_id}")
+
+                else:
+                    # Receiver offline → only sender sees single tick
+                    pass
+
+                # Always send message back to sender
                 await websocket.send_text(formatted)
+
 
     except:
         if username in active_connections:
