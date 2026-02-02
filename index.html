@@ -89,6 +89,15 @@
         ws = new WebSocket(`${protocol}://${location.host}/ws/${myName}`);
 
         ws.onmessage = function(event) {
+        if (data.startsWith("READ|")) {
+        const messages = document.querySelectorAll(".me");
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg) {
+            lastMsg.textContent = lastMsg.textContent.replace("✔", "✔✔");
+        }
+        return;
+    }
+
             const data = event.data;
             const typingDiv = document.getElementById("typing");
 

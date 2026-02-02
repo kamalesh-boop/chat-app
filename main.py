@@ -13,9 +13,11 @@ CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sender TEXT,
     receiver TEXT,
-    message TEXT
+    message TEXT,
+    read INTEGER DEFAULT 0
 )
 """)
+
 conn.commit()
 
 # ---------------- CONNECTIONS ----------------
@@ -66,17 +68,22 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 receiver = parts[1]
                 message = parts[2]
 
-                cursor.execute(
-                    "INSERT INTO messages (sender, receiver, message) VALUES (?, ?, ?)",
-                    (username, receiver, message)
-                )
+                # 🔹 Mark messages as READ when user is online
+                cursor.execute("""
+                    UPDATE messages
+                    SET read = 1
+                    WHERE receiver = ? AND read = 0
+                """, (username,))
                 conn.commit()
 
-                formatted = f"{username} → {receiver}: {message}"
+
+                formatted = f"{username} → {receiver}: {message} ✔"
 
                 # send to receiver
                 if receiver in active_connections:
                     await active_connections[receiver].send_text(formatted)
+                    await websocket.send_text(f"READ|{receiver}")
+
 
                 # send back to sender
                 await websocket.send_text(formatted)
