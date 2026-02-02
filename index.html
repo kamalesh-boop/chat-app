@@ -128,7 +128,6 @@
 
     function sendMessage() {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
-            alert("Not connected");
             return;
         }
 
@@ -145,16 +144,21 @@
 
     // -------- DETECT TYPING --------
     document.getElementById("message").addEventListener("input", () => {
-        const receiver = document.getElementById("receiver").value.trim();
-        if (!receiver || !ws) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-        ws.send("TYPE|" + receiver);
+    const receiver = document.getElementById("receiver").value.trim();
+    if (!receiver) return;
 
-        clearTimeout(typingTimeout);
-        typingTimeout = setTimeout(() => {
+    ws.send("TYPE|" + receiver);
+
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) {
             ws.send("STOP|" + receiver);
-        }, 800);
-    });
+        }
+    }, 800);
+});
+
 </script>
 
 </body>
