@@ -31,7 +31,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     await websocket.accept()
     active_connections[username] = websocket
 
-    # 🔹 Send chat history involving this user
+    # 🔹 Send previous chat history
     cursor.execute("""
         SELECT sender, receiver, message FROM messages
         WHERE sender = ? OR receiver = ?
@@ -43,25 +43,44 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     try:
         while True:
             data = await websocket.receive_text()
+            parts = data.split("|")
+            action = parts[0]
 
-            # Expected format: receiver|message
-            receiver, message = data.split("|", 1)
+            # -------- TYPING INDICATOR --------
+            if action == "TYPE":
+                receiver = parts[1]
+                if receiver in active_connections:
+                    await active_connections[receiver].send_text(
+                        f"TYPING|{username}"
+                    )
 
-            # 🔹 Store message
-            cursor.execute(
-                "INSERT INTO messages (sender, receiver, message) VALUES (?, ?, ?)",
-                (username, receiver, message)
-            )
-            conn.commit()
+            elif action == "STOP":
+                receiver = parts[1]
+                if receiver in active_connections:
+                    await active_connections[receiver].send_text(
+                        f"STOP|{username}"
+                    )
 
-            formatted = f"{username} → {receiver}: {message}"
+            # -------- NORMAL MESSAGE --------
+            elif action == "MSG":
+                receiver = parts[1]
+                message = parts[2]
 
-            # 🔹 Send to receiver if online
-            if receiver in active_connections:
-                await active_connections[receiver].send_text(formatted)
+                cursor.execute(
+                    "INSERT INTO messages (sender, receiver, message) VALUES (?, ?, ?)",
+                    (username, receiver, message)
+                )
+                conn.commit()
 
-            # 🔹 Send back to sender
-            await websocket.send_text(formatted)
+                formatted = f"{username} → {receiver}: {message}"
+
+                # send to receiver
+                if receiver in active_connections:
+                    await active_connections[receiver].send_text(formatted)
+
+                # send back to sender
+                await websocket.send_text(formatted)
 
     except:
-        del active_connections[username]
+        if username in active_connections:
+            del active_connections[username]

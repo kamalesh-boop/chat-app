@@ -41,6 +41,13 @@
             border: 1px solid #ddd;
         }
 
+        #typing {
+            font-style: italic;
+            color: gray;
+            margin-top: 5px;
+            min-height: 18px;
+        }
+
         input, button {
             width: 100%;
             margin-top: 5px;
@@ -59,6 +66,7 @@
     <input id="receiver" placeholder="Chat with (username)">
 
     <div class="messages" id="messages"></div>
+    <div id="typing"></div>
 
     <input id="message" placeholder="Type message..." disabled>
     <button onclick="sendMessage()" id="sendBtn" disabled>Send</button>
@@ -67,6 +75,7 @@
 <script>
     let ws;
     let myName = "";
+    let typingTimeout;
 
     function connect() {
         myName = document.getElementById("username").value.trim();
@@ -80,17 +89,33 @@
         ws = new WebSocket(`${protocol}://${location.host}/ws/${myName}`);
 
         ws.onmessage = function(event) {
+            const data = event.data;
+            const typingDiv = document.getElementById("typing");
+
+            // -------- TYPING INDICATOR --------
+            if (data.startsWith("TYPING|")) {
+                const user = data.split("|")[1];
+                typingDiv.textContent = `${user} is typing...`;
+                return;
+            }
+
+            if (data.startsWith("STOP|")) {
+                typingDiv.textContent = "";
+                return;
+            }
+
+            // -------- NORMAL MESSAGE --------
             const messages = document.getElementById("messages");
             const div = document.createElement("div");
             div.classList.add("msg");
 
-            if (event.data.startsWith(myName)) {
+            if (data.startsWith(myName)) {
                 div.classList.add("me");
             } else {
                 div.classList.add("other");
             }
 
-            div.textContent = event.data;
+            div.textContent = data;
             messages.appendChild(div);
             messages.scrollTop = messages.scrollHeight;
         };
@@ -112,9 +137,24 @@
 
         if (!receiver || !message) return;
 
-        ws.send(receiver + "|" + message);
+        ws.send("MSG|" + receiver + "|" + message);
+        ws.send("STOP|" + receiver);
+
         document.getElementById("message").value = "";
     }
+
+    // -------- DETECT TYPING --------
+    document.getElementById("message").addEventListener("input", () => {
+        const receiver = document.getElementById("receiver").value.trim();
+        if (!receiver || !ws) return;
+
+        ws.send("TYPE|" + receiver);
+
+        clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => {
+            ws.send("STOP|" + receiver);
+        }, 800);
+    });
 </script>
 
 </body>
