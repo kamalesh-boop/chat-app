@@ -9,7 +9,7 @@ app = FastAPI()
 # ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # OK for demo / academic / project
+    allow_origins=["*"],  # OK for demo / academic use
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,12 +41,23 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     await websocket.accept()
     active_connections[username] = websocket
 
-    # ---- BROADCAST ONLINE ----
+    # =====================================================
+    # PRESENCE SYNC (CRITICAL FIX)
+    # =====================================================
+
+    # 1️⃣ Tell existing users that I am online
     for user, ws in active_connections.items():
         if user != username:
             await ws.send_text(f"STATUS|{username}|online")
 
-    # ---- SEND CHAT HISTORY ----
+    # 2️⃣ Tell me who is already online
+    for user in active_connections:
+        if user != username:
+            await websocket.send_text(f"STATUS|{user}|online")
+
+    # =====================================================
+    # SEND CHAT HISTORY
+    # =====================================================
     async with db_lock:
         cursor.execute("""
             SELECT id, sender, receiver, message, read
@@ -67,7 +78,9 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 f"MSG|{msg_id}|{sender}|{receiver}|{message}|"
             )
 
-    # ---- MARK UNREAD AS READ ON CONNECT ----
+    # =====================================================
+    # MARK UNREAD AS READ ON CONNECT
+    # =====================================================
     async with db_lock:
         cursor.execute("""
             SELECT id, sender FROM messages
@@ -86,6 +99,9 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
         if sender in active_connections:
             await active_connections[sender].send_text(f"READ|{msg_id}")
 
+    # =====================================================
+    # MAIN LOOP
+    # =====================================================
     try:
         while True:
             data = await websocket.receive_text()
@@ -141,10 +157,11 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     except WebSocketDisconnect:
         pass
     finally:
-        # ---- CLEANUP ----
+        # =====================================================
+        # CLEANUP & OFFLINE BROADCAST
+        # =====================================================
         if username in active_connections:
             del active_connections[username]
 
-            # ---- BROADCAST OFFLINE ----
             for ws in active_connections.values():
                 await ws.send_text(f"STATUS|{username}|offline")
