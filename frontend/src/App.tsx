@@ -3,17 +3,20 @@ import "./index.css";
 
 const WS_BASE = "wss://chat-backend-fxwq.onrender.com";
 
+type MsgStatus = "sent" | "seen";
+
 type Msg = {
   id: number;
   text: string;
   sender: string;
-  status: "sent" | "seen";
+  status: MsgStatus;
 };
 
 export default function App() {
   const [username, setUsername] = useState("");
   const [receiver, setReceiver] = useState("");
   const [connected, setConnected] = useState(false);
+
   const [messages, setMessages] = useState<Msg[]>([]);
   const [messageText, setMessageText] = useState("");
   const [typingText, setTypingText] = useState("");
@@ -44,7 +47,7 @@ export default function App() {
     ws.onmessage = (event) => {
       const data = event.data;
 
-      // READ RECEIPT (✔ → ✔✔)
+      // ---- READ RECEIPT ----
       if (data.startsWith("READ|")) {
         const id = Number(data.split("|")[1]);
 
@@ -56,7 +59,7 @@ export default function App() {
         return;
       }
 
-      // TYPING
+      // ---- TYPING ----
       if (data.startsWith("TYPING|")) {
         setTypingText(`${data.split("|")[1]} is typing...`);
         return;
@@ -67,19 +70,20 @@ export default function App() {
         return;
       }
 
-      // MESSAGE
+      // ---- MESSAGE ----
       if (data.startsWith("MSG|")) {
         const [, id, sender, , text] = data.split("|");
 
         setMessages((prev) => {
           if (prev.some((m) => m.id === Number(id))) return prev;
+
           return [
             ...prev,
             {
               id: Number(id),
               sender,
               text,
-              status: sender === username ? "sent" : "seen",
+              status: "sent", // IMPORTANT: always start as sent
             },
           ];
         });
@@ -141,12 +145,8 @@ export default function App() {
               <div className="bubble">
                 {m.text}
                 {m.sender === username && (
-                  <span
-                    className={`tick ${
-                      m.status === "seen" ? "seen" : ""
-                    }`}
-                  >
-                    {m.status === "seen" ? "✔✔" : "✔"}
+                  <span className={`tick ${m.status === "seen" ? "seen" : ""}`}>
+                    ✔✔
                   </span>
                 )}
               </div>
