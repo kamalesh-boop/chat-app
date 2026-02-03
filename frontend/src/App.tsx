@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import "./index.css";
 
+const WS_BASE = "wss://chat-backend-fxwq.onrender.com";
+
 type Msg = {
   id?: number;
   text: string;
@@ -29,12 +31,16 @@ export default function App() {
   const connect = () => {
     if (!username) return;
 
-    const ws = new WebSocket(`wss://chat-backend.onrender.com/ws/${username}`);
-;
+    const ws = new WebSocket(`${WS_BASE}/ws/${username}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
       setConnected(true);
+    };
+
+    ws.onclose = () => {
+      setConnected(false);
+      setTypingText("");
     };
 
     ws.onmessage = (event) => {
@@ -44,9 +50,7 @@ export default function App() {
       if (data.startsWith("READ|")) {
         const id = Number(data.split("|")[1]);
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === id ? { ...m, status: "✔✔" } : m
-          )
+          prev.map((m) => (m.id === id ? { ...m, status: "✔✔" } : m))
         );
         return;
       }
@@ -65,10 +69,11 @@ export default function App() {
       // MESSAGE
       if (data.startsWith("MSG|")) {
         const [, id, sender, , text, status] = data.split("|");
-        setMessages((prev) => [
-          ...prev,
-          { id: Number(id), sender, text, status },
-        ]);
+
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === Number(id))) return prev;
+          return [...prev, { id: Number(id), sender, text, status }];
+        });
       }
     };
   };
@@ -119,9 +124,9 @@ export default function App() {
         />
 
         <div className="messages">
-          {messages.map((m, i) => (
+          {messages.map((m) => (
             <div
-              key={i}
+              key={m.id}
               className={`msg ${m.sender === username ? "me" : "other"}`}
             >
               <div className="bubble">
