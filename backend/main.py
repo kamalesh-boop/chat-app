@@ -1,8 +1,17 @@
 from fastapi import FastAPI, WebSocket
-from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 
 app = FastAPI()
+
+# ---------------- CORS (IMPORTANT FOR DEPLOYMENT) ----------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # OK for demo / project
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------------- DATABASE ----------------
 conn = sqlite3.connect("chat.db", check_same_thread=False)
@@ -19,14 +28,10 @@ CREATE TABLE IF NOT EXISTS messages (
 """)
 conn.commit()
 
-# ---------------- CONNECTIONS ----------------
-active_connections = {}  # username -> websocket
+# ---------------- ACTIVE CONNECTIONS ----------------
+active_connections: dict[str, WebSocket] = {}
 
-@app.get("/")
-async def get():
-    with open("index.html", "r", encoding="utf-8") as f:
-        return HTMLResponse(f.read())
-
+# ---------------- WEBSOCKET ENDPOINT ----------------
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     await websocket.accept()
@@ -65,7 +70,8 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
 
     if unread:
         cursor.execute("""
-            UPDATE messages SET read = 1
+            UPDATE messages
+            SET read = 1
             WHERE receiver = ? AND read = 0
         """, (username,))
         conn.commit()
@@ -84,7 +90,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
 
             action = parts[0]
 
-            # -------- TYPING --------
+            # -------- TYPING INDICATOR --------
             if action == "TYPE" and len(parts) >= 2:
                 receiver = parts[1]
                 if receiver in active_connections:
@@ -113,22 +119,25 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 msg_id = cursor.lastrowid
                 formatted = f"MSG|{msg_id}|{username}|{receiver}|{message}|✔"
 
-                # Receiver online → instant read
+                # Send to receiver
                 if receiver in active_connections:
                     await active_connections[receiver].send_text(formatted)
 
+                    # Mark as read instantly
                     cursor.execute(
                         "UPDATE messages SET read = 1 WHERE id = ? AND read = 0",
                         (msg_id,)
                     )
                     conn.commit()
 
+                    # Notify sender (✔✔)
                     await websocket.send_text(f"READ|{msg_id}")
 
-                # Always send to sender
+                # Always send back to sender
                 await websocket.send_text(formatted)
 
     except:
+        # Cleanup on disconnect
         if username in active_connections:
             del active_connections[username]
 

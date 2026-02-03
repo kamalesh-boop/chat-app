@@ -20,6 +20,7 @@ export default function App() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const typingTimeout = useRef<number | null>(null);
+  const isTypingRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   // Auto-scroll
@@ -41,6 +42,7 @@ export default function App() {
     ws.onclose = () => {
       setConnected(false);
       setTypingText("");
+      isTypingRef.current = false;
     };
 
     ws.onmessage = (event) => {
@@ -84,21 +86,29 @@ export default function App() {
 
     wsRef.current.send(`MSG|${receiver}|${messageText}`);
     wsRef.current.send(`STOP|${receiver}`);
+    isTypingRef.current = false;
     setMessageText("");
   };
 
-  // TYPING HANDLER
+  // TYPING HANDLER (PRODUCTION SAFE)
   const handleTyping = () => {
     if (!wsRef.current || !receiver) return;
 
-    wsRef.current.send(`TYPE|${receiver}`);
+    // Send TYPE only once
+    if (!isTypingRef.current) {
+      wsRef.current.send(`TYPE|${receiver}`);
+      isTypingRef.current = true;
+    }
 
-    if (typingTimeout.current)
+    // Reset STOP timer
+    if (typingTimeout.current) {
       window.clearTimeout(typingTimeout.current);
+    }
 
     typingTimeout.current = window.setTimeout(() => {
       wsRef.current?.send(`STOP|${receiver}`);
-    }, 800);
+      isTypingRef.current = false;
+    }, 1500); // ⬅ IMPORTANT for Render latency
   };
 
   return (
