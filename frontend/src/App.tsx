@@ -17,16 +17,21 @@ export default function App() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [messageText, setMessageText] = useState("");
   const [typingText, setTypingText] = useState("");
+  const [statusText, setStatusText] = useState("🔴 Offline");
 
   const wsRef = useRef<WebSocket | null>(null);
   const typingTimeout = useRef<number | null>(null);
-  const isTypingRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Reset status when receiver changes
+  useEffect(() => {
+    setStatusText("🔴 Offline");
+  }, [receiver]);
 
   // CONNECT
   const connect = () => {
@@ -42,13 +47,22 @@ export default function App() {
     ws.onclose = () => {
       setConnected(false);
       setTypingText("");
-      isTypingRef.current = false;
+      setStatusText("🔴 Offline");
     };
 
     ws.onmessage = (event) => {
       const data = event.data;
 
-      // READ RECEIPT
+      // ✅ STATUS (ONLINE / OFFLINE)
+      if (data.startsWith("STATUS|")) {
+        const [, user, state] = data.split("|");
+        if (user === receiver) {
+          setStatusText(state === "online" ? "🟢 Online" : "🔴 Offline");
+        }
+        return;
+      }
+
+      // ✅ READ RECEIPT
       if (data.startsWith("READ|")) {
         const id = Number(data.split("|")[1]);
         setMessages((prev) =>
@@ -57,7 +71,7 @@ export default function App() {
         return;
       }
 
-      // TYPING
+      // ✅ TYPING
       if (data.startsWith("TYPING|")) {
         setTypingText(`${data.split("|")[1]} is typing...`);
         return;
@@ -68,7 +82,7 @@ export default function App() {
         return;
       }
 
-      // MESSAGE
+      // ✅ MESSAGE
       if (data.startsWith("MSG|")) {
         const [, id, sender, , text, status] = data.split("|");
 
@@ -86,29 +100,21 @@ export default function App() {
 
     wsRef.current.send(`MSG|${receiver}|${messageText}`);
     wsRef.current.send(`STOP|${receiver}`);
-    isTypingRef.current = false;
     setMessageText("");
   };
 
-  // TYPING HANDLER (PRODUCTION SAFE)
+  // TYPING HANDLER
   const handleTyping = () => {
     if (!wsRef.current || !receiver) return;
 
-    // Send TYPE only once
-    if (!isTypingRef.current) {
-      wsRef.current.send(`TYPE|${receiver}`);
-      isTypingRef.current = true;
-    }
+    wsRef.current.send(`TYPE|${receiver}`);
 
-    // Reset STOP timer
-    if (typingTimeout.current) {
+    if (typingTimeout.current)
       window.clearTimeout(typingTimeout.current);
-    }
 
     typingTimeout.current = window.setTimeout(() => {
       wsRef.current?.send(`STOP|${receiver}`);
-      isTypingRef.current = false;
-    }, 1500); // ⬅ IMPORTANT for Render latency
+    }, 800);
   };
 
   return (
@@ -132,6 +138,9 @@ export default function App() {
           value={receiver}
           onChange={(e) => setReceiver(e.target.value)}
         />
+
+        {/* ✅ ONLINE / OFFLINE */}
+        <div className="status">{statusText}</div>
 
         <div className="messages">
           {messages.map((m) => (
