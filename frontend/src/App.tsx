@@ -4,38 +4,37 @@ import "./index.css";
 const WS_BASE = "wss://chat-backend-fxwq.onrender.com";
 
 type Msg = {
-  id?: number;
+  id: number;
   text: string;
   sender: string;
-  status?: string;
+  status: "✔" | "✔✔";
 };
 
 export default function App() {
   const [username, setUsername] = useState("");
   const [receiver, setReceiver] = useState("");
   const [connected, setConnected] = useState(false);
+
   const [messages, setMessages] = useState<Msg[]>([]);
   const [messageText, setMessageText] = useState("");
+
   const [typingText, setTypingText] = useState("");
-  const [statusText, setStatusText] = useState("🔴 Offline");
+  const [onlineStatus, setOnlineStatus] = useState<"online" | "offline">(
+    "offline"
+  );
 
   const wsRef = useRef<WebSocket | null>(null);
   const typingTimeout = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Auto-scroll
+  /* ---------------- AUTO SCROLL ---------------- */
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Reset status when receiver changes
-  useEffect(() => {
-    setStatusText("🔴 Offline");
-  }, [receiver]);
-
-  // CONNECT
+  /* ---------------- CONNECT ---------------- */
   const connect = () => {
-    if (!username) return;
+    if (!username.trim()) return;
 
     const ws = new WebSocket(`${WS_BASE}/ws/${username}`);
     wsRef.current = ws;
@@ -47,76 +46,95 @@ export default function App() {
     ws.onclose = () => {
       setConnected(false);
       setTypingText("");
-      setStatusText("🔴 Offline");
+      setOnlineStatus("offline");
     };
 
     ws.onmessage = (event) => {
-      const data = event.data;
+      const data: string = event.data;
 
-      // ✅ STATUS (ONLINE / OFFLINE)
+      /* ---------- STATUS ---------- */
       if (data.startsWith("STATUS|")) {
         const [, user, state] = data.split("|");
         if (user === receiver) {
-          setStatusText(state === "online" ? "🟢 Online" : "🔴 Offline");
+          setOnlineStatus(state === "online" ? "online" : "offline");
         }
         return;
       }
 
-      // ✅ READ RECEIPT
+      /* ---------- READ RECEIPT ---------- */
       if (data.startsWith("READ|")) {
         const id = Number(data.split("|")[1]);
         setMessages((prev) =>
-          prev.map((m) => (m.id === id ? { ...m, status: "✔✔" } : m))
+          prev.map((m) =>
+            m.id === id ? { ...m, status: "✔✔" } : m
+          )
         );
         return;
       }
 
-      // ✅ TYPING
+      /* ---------- TYPING ---------- */
       if (data.startsWith("TYPING|")) {
-        setTypingText(`${data.split("|")[1]} is typing...`);
+        const sender = data.split("|")[1];
+        if (sender === receiver) {
+          setTypingText(`${sender} is typing…`);
+        }
         return;
       }
 
       if (data.startsWith("STOP|")) {
-        setTypingText("");
+        const sender = data.split("|")[1];
+        if (sender === receiver) {
+          setTypingText("");
+        }
         return;
       }
 
-      // ✅ MESSAGE
+      /* ---------- MESSAGE ---------- */
       if (data.startsWith("MSG|")) {
         const [, id, sender, , text, status] = data.split("|");
+        const msgId = Number(id);
 
         setMessages((prev) => {
-          if (prev.some((m) => m.id === Number(id))) return prev;
-          return [...prev, { id: Number(id), sender, text, status }];
+          if (prev.some((m) => m.id === msgId)) return prev;
+          return [
+            ...prev,
+            {
+              id: msgId,
+              sender,
+              text,
+              status: status === "✔✔" ? "✔✔" : "✔",
+            },
+          ];
         });
       }
     };
   };
 
-  // SEND MESSAGE
+  /* ---------------- SEND MESSAGE ---------------- */
   const sendMessage = () => {
-    if (!wsRef.current || !receiver || !messageText) return;
+    if (!wsRef.current || !receiver.trim() || !messageText.trim()) return;
 
     wsRef.current.send(`MSG|${receiver}|${messageText}`);
     wsRef.current.send(`STOP|${receiver}`);
     setMessageText("");
   };
 
-  // TYPING HANDLER
+  /* ---------------- TYPING HANDLER ---------------- */
   const handleTyping = () => {
-    if (!wsRef.current || !receiver) return;
+    if (!wsRef.current || !receiver.trim()) return;
 
     wsRef.current.send(`TYPE|${receiver}`);
 
-    if (typingTimeout.current)
+    if (typingTimeout.current) {
       window.clearTimeout(typingTimeout.current);
+    }
 
     typingTimeout.current = window.setTimeout(() => {
       wsRef.current?.send(`STOP|${receiver}`);
     }, 800);
   };
 
+  /* ---------------- UI ---------------- */
   return (
     <div className="app-root">
       <div className="chat-box">
@@ -136,11 +154,16 @@ export default function App() {
         <input
           placeholder="Chat with (username)"
           value={receiver}
-          onChange={(e) => setReceiver(e.target.value)}
+          onChange={(e) => {
+            setReceiver(e.target.value);
+            setOnlineStatus("offline");
+            setTypingText("");
+          }}
         />
 
-        {/* ✅ ONLINE / OFFLINE */}
-        <div className="status">{statusText}</div>
+        <div className={`status ${onlineStatus}`}>
+          {onlineStatus === "online" ? "🟢 Online" : "🔴 Offline"}
+        </div>
 
         <div className="messages">
           {messages.map((m) => (
@@ -151,7 +174,7 @@ export default function App() {
               <div className="bubble">
                 {m.text}
                 {m.sender === username && (
-                  <span className="tick">{m.status || "✔"}</span>
+                  <span className="tick">{m.status}</span>
                 )}
               </div>
             </div>
