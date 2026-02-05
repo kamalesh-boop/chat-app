@@ -42,15 +42,15 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     active_connections[username] = websocket
 
     # =====================================================
-    # PRESENCE SYNC (CRITICAL FIX)
+    # PRESENCE SYNC
     # =====================================================
 
-    # 1️⃣ Tell existing users that I am online
+    # Notify others I'm online
     for user, ws in active_connections.items():
         if user != username:
             await ws.send_text(f"STATUS|{username}|online")
 
-    # 2️⃣ Tell me who is already online
+    # Tell me who is already online
     for user in active_connections:
         if user != username:
             await websocket.send_text(f"STATUS|{user}|online")
@@ -79,27 +79,6 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
             )
 
     # =====================================================
-    # MARK UNREAD AS READ ON CONNECT
-    # =====================================================
-    async with db_lock:
-        cursor.execute("""
-            SELECT id, sender FROM messages
-            WHERE receiver = ? AND read = 0
-        """, (username,))
-        unread = cursor.fetchall()
-
-        if unread:
-            cursor.execute("""
-                UPDATE messages SET read = 1
-                WHERE receiver = ? AND read = 0
-            """, (username,))
-            conn.commit()
-
-    for msg_id, sender in unread:
-        if sender in active_connections:
-            await active_connections[sender].send_text(f"READ|{msg_id}")
-
-    # =====================================================
     # MAIN LOOP
     # =====================================================
     try:
@@ -108,7 +87,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
             parts = data.split("|")
             action = parts[0]
 
-            # ---- TYPING ----
+            # ---------------- TYPING ----------------
             if action == "TYPE" and len(parts) >= 2:
                 receiver = parts[1]
                 if receiver in active_connections:
@@ -123,7 +102,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                         f"STOP|{username}"
                     )
 
-            # ---- MESSAGE ----
+            # ---------------- MESSAGE ----------------
             elif action == "MSG" and len(parts) >= 3:
                 receiver = parts[1]
                 message = parts[2]
@@ -138,21 +117,36 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
 
                 formatted = f"MSG|{msg_id}|{username}|{receiver}|{message}|✔"
 
-                # Receiver online → instant read
+                # Send to receiver (DELIVERED, not read)
                 if receiver in active_connections:
                     await active_connections[receiver].send_text(formatted)
 
-                    async with db_lock:
-                        cursor.execute(
-                            "UPDATE messages SET read = 1 WHERE id = ? AND read = 0",
-                            (msg_id,)
-                        )
-                        conn.commit()
-
-                    await websocket.send_text(f"READ|{msg_id}")
-
                 # Always send to sender
                 await websocket.send_text(formatted)
+
+            # ---------------- SEEN (IMPORTANT) ----------------
+            elif action == "SEEN" and len(parts) >= 2:
+                msg_id = int(parts[1])
+
+                async with db_lock:
+                    cursor.execute(
+                        "UPDATE messages SET read = 1 WHERE id = ?",
+                        (msg_id,)
+                    )
+                    conn.commit()
+
+                    cursor.execute(
+                        "SELECT sender FROM messages WHERE id = ?",
+                        (msg_id,)
+                    )
+                    row = cursor.fetchone()
+
+                if row:
+                    sender = row[0]
+                    if sender in active_connections:
+                        await active_connections[sender].send_text(
+                            f"READ|{msg_id}"
+                        )
 
     except WebSocketDisconnect:
         pass

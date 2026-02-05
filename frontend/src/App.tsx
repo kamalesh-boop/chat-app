@@ -13,6 +13,7 @@ type Msg = {
 };
 
 export default function App() {
+  // ---------------- STATE ----------------
   const [username, setUsername] = useState("");
   const [receiver, setReceiver] = useState("");
   const [connected, setConnected] = useState(false);
@@ -21,23 +22,26 @@ export default function App() {
   const [messageText, setMessageText] = useState("");
   const [typingText, setTypingText] = useState("");
 
+  // ---------------- REFS ----------------
   const wsRef = useRef<WebSocket | null>(null);
   const typingTimeout = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Auto scroll
+  // ---------------- AUTO SCROLL ----------------
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // CONNECT
+  // ---------------- CONNECT ----------------
   const connect = () => {
     if (!username) return;
 
     const ws = new WebSocket(`${WS_BASE}/ws/${username}`);
     wsRef.current = ws;
 
-    ws.onopen = () => setConnected(true);
+    ws.onopen = () => {
+      setConnected(true);
+    };
 
     ws.onclose = () => {
       setConnected(false);
@@ -47,7 +51,8 @@ export default function App() {
     ws.onmessage = (event) => {
       const data = event.data;
 
-      // ---- READ RECEIPT ----
+      // ================= READ RECEIPT =================
+      // Backend → READ|messageId
       if (data.startsWith("READ|")) {
         const id = Number(data.split("|")[1]);
 
@@ -59,9 +64,10 @@ export default function App() {
         return;
       }
 
-      // ---- TYPING ----
+      // ================= TYPING =================
       if (data.startsWith("TYPING|")) {
-        setTypingText(`${data.split("|")[1]} is typing...`);
+        const user = data.split("|")[1];
+        setTypingText(`${user} is typing...`);
         return;
       }
 
@@ -70,28 +76,37 @@ export default function App() {
         return;
       }
 
-      // ---- MESSAGE ----
+      // ================= MESSAGE =================
+      // Backend → MSG|id|sender|receiver|text|✔
       if (data.startsWith("MSG|")) {
         const [, id, sender, , text] = data.split("|");
+        const msgId = Number(id);
 
         setMessages((prev) => {
-          if (prev.some((m) => m.id === Number(id))) return prev;
+          // Prevent duplicate messages
+          if (prev.some((m) => m.id === msgId)) return prev;
 
           return [
             ...prev,
             {
-              id: Number(id),
+              id: msgId,
               sender,
               text,
-              status: "sent", // IMPORTANT: always start as sent
+              status: "sent", // always start as SENT
             },
           ];
         });
+
+        // 🔥 CRITICAL STEP:
+        // If I am the RECEIVER, notify backend that I have SEEN this message
+        if (sender !== username) {
+          wsRef.current?.send(`SEEN|${msgId}`);
+        }
       }
     };
   };
 
-  // SEND MESSAGE
+  // ---------------- SEND MESSAGE ----------------
   const sendMessage = () => {
     if (!wsRef.current || !receiver || !messageText) return;
 
@@ -100,25 +115,28 @@ export default function App() {
     setMessageText("");
   };
 
-  // TYPING HANDLER
+  // ---------------- TYPING HANDLER ----------------
   const handleTyping = () => {
     if (!wsRef.current || !receiver) return;
 
     wsRef.current.send(`TYPE|${receiver}`);
 
-    if (typingTimeout.current)
+    if (typingTimeout.current) {
       window.clearTimeout(typingTimeout.current);
+    }
 
     typingTimeout.current = window.setTimeout(() => {
       wsRef.current?.send(`STOP|${receiver}`);
     }, 800);
   };
 
+  // ---------------- UI ----------------
   return (
     <div className="app-root">
       <div className="chat-box">
         <h2>Private Chat</h2>
 
+        {/* USERNAME */}
         <input
           placeholder="Your username"
           value={username}
@@ -130,12 +148,14 @@ export default function App() {
           {connected ? "Connected" : "Join"}
         </button>
 
+        {/* RECEIVER */}
         <input
           placeholder="Chat with (username)"
           value={receiver}
           onChange={(e) => setReceiver(e.target.value)}
         />
 
+        {/* MESSAGES */}
         <div className="messages">
           {messages.map((m) => (
             <div
@@ -144,8 +164,14 @@ export default function App() {
             >
               <div className="bubble">
                 {m.text}
+
+                {/* TICK */}
                 {m.sender === username && (
-                  <span className={`tick ${m.status === "seen" ? "seen" : ""}`}>
+                  <span
+                    className={`tick ${
+                      m.status === "seen" ? "seen" : ""
+                    }`}
+                  >
                     ✔✔
                   </span>
                 )}
@@ -155,8 +181,10 @@ export default function App() {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* TYPING INDICATOR */}
         <div className="typing">{typingText}</div>
 
+        {/* MESSAGE INPUT */}
         <input
           placeholder="Type message..."
           value={messageText}
