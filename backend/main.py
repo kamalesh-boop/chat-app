@@ -15,7 +15,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------- DATABASE ----------------
+# ---------------- DATABASE (FIXED) ----------------
 conn = sqlite3.connect("chat.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -33,7 +33,7 @@ conn.commit()
 
 db_lock = asyncio.Lock()
 
-# ---------------- PRESENCE (MULTI-TAB SAFE) ----------------
+# ---------------- PRESENCE ----------------
 active_connections: Dict[str, Set[WebSocket]] = {}
 
 # ---------------- WEBSOCKET ----------------
@@ -48,7 +48,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
 
     active_connections[username].add(websocket)
 
-    # ---------- PRESENCE SYNC ----------
+    # ---- ONLINE SYNC ----
     if first_connection:
         for user, sockets in active_connections.items():
             if user != username:
@@ -62,26 +62,27 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     try:
         while True:
             data = await websocket.receive_text()
-            parts = data.split("|")
+
+            # ✅ SAFE SPLIT
+            parts = data.split("|", 2)
             action = parts[0]
 
             # ---------- TYPING ----------
-            if action == "TYPE":
+            if action == "TYPE" and len(parts) == 2:
                 receiver = parts[1]
                 if receiver in active_connections:
                     for ws in active_connections[receiver]:
                         await ws.send_text(f"TYPING|{username}")
 
-            elif action == "STOP":
+            elif action == "STOP" and len(parts) == 2:
                 receiver = parts[1]
                 if receiver in active_connections:
                     for ws in active_connections[receiver]:
                         await ws.send_text(f"STOP|{username}")
 
             # ---------- MESSAGE ----------
-            elif action == "MSG":
-                receiver = parts[1]
-                message = parts[2]
+            elif action == "MSG" and len(parts) == 3:
+                receiver, message = parts[1], parts[2]
 
                 async with db_lock:
                     cursor.execute(
@@ -100,16 +101,15 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 payload = f"MSG|{msg_id}|{username}|{receiver}|{message}|{timestamp}"
 
                 # Send to sender (all tabs)
-                for ws in active_connections[username]:
+                for ws in active_connections.get(username, []):
                     await ws.send_text(payload)
 
                 # Send to receiver if online
-                if receiver in active_connections:
-                    for ws in active_connections[receiver]:
-                        await ws.send_text(payload)
+                for ws in active_connections.get(receiver, []):
+                    await ws.send_text(payload)
 
             # ---------- SEEN ----------
-            elif action == "SEEN":
+            elif action == "SEEN" and len(parts) == 2:
                 msg_id = int(parts[1])
 
                 async with db_lock:
@@ -123,17 +123,22 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                         "SELECT sender FROM messages WHERE id = ?",
                         (msg_id,)
                     )
-                    sender = cursor.fetchone()[0]
+                    row = cursor.fetchone()
 
-                if sender in active_connections:
-                    for ws in active_connections[sender]:
+                if row:
+                    sender = row[0]
+                    for ws in active_connections.get(sender, []):
                         await ws.send_text(f"READ|{msg_id}")
 
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        # 🔥 NEVER CRASH THE SOCKET SILENTLY
+        print("WebSocket error:", e)
+
     finally:
         # ---------- CLEANUP ----------
-        active_connections[username].remove(websocket)
+        active_connections[username].discard(websocket)
 
         if not active_connections[username]:
             del active_connections[username]
