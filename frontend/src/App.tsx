@@ -10,7 +10,6 @@ type Msg = {
   text: string;
   sender: string;
   status: MsgStatus;
-  timestamp: string;
 };
 
 export default function App() {
@@ -27,16 +26,13 @@ export default function App() {
   const typingTimeout = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
+  // Auto scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const formatTime = (ts: string) =>
-    new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
-  // ---------- CONNECT ----------
   const connect = () => {
-    if (!username || connected) return;
+    if (!username) return;
 
     const ws = new WebSocket(`${WS_BASE}/ws/${username}`);
     wsRef.current = ws;
@@ -49,21 +45,22 @@ export default function App() {
       setOnlineUsers(new Set());
     };
 
-    ws.onerror = () => ws.close();
-
     ws.onmessage = (event) => {
-      const data = event.data as string;
+      const data = event.data;
 
+      // -------- STATUS --------
       if (data.startsWith("STATUS|")) {
         const [, user, state] = data.split("|");
+
         setOnlineUsers((prev) => {
-          const next = new Set(prev);
-          state === "online" ? next.add(user) : next.delete(user);
-          return next;
+          const updated = new Set(prev);
+          state === "online" ? updated.add(user) : updated.delete(user);
+          return updated;
         });
         return;
       }
 
+      // -------- READ --------
       if (data.startsWith("READ|")) {
         const id = Number(data.split("|")[1]);
         setMessages((prev) =>
@@ -72,9 +69,9 @@ export default function App() {
         return;
       }
 
+      // -------- TYPING --------
       if (data.startsWith("TYPING|")) {
-        const user = data.split("|")[1];
-        if (user === receiver) setTypingText(`${user} is typing...`);
+        setTypingText(`${data.split("|")[1]} is typing...`);
         return;
       }
 
@@ -83,25 +80,24 @@ export default function App() {
         return;
       }
 
+      // -------- MESSAGE --------
       if (data.startsWith("MSG|")) {
-        const [, id, sender, , rest] = data.split("|", 5);
-        const [text, timestamp] = rest.split("|", 2);
+        const [, id, sender, , text] = data.split("|");
         const msgId = Number(id);
 
-        setMessages((prev) =>
-          prev.some((m) => m.id === msgId)
-            ? prev
-            : [
-                ...prev,
-                {
-                  id: msgId,
-                  sender,
-                  text,
-                  timestamp,
-                  status: sender === username ? "sent" : "seen",
-                },
-              ]
-        );
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === msgId)) return prev;
+
+          return [
+            ...prev,
+            {
+              id: msgId,
+              sender,
+              text,
+              status: sender === username ? "sent" : "seen",
+            },
+          ];
+        });
 
         if (sender !== username) {
           wsRef.current?.send(`SEEN|${msgId}`);
@@ -111,7 +107,7 @@ export default function App() {
   };
 
   const sendMessage = () => {
-    if (!wsRef.current || !receiver || !messageText.trim()) return;
+    if (!wsRef.current || !receiver || !messageText) return;
     wsRef.current.send(`MSG|${receiver}|${messageText}`);
     wsRef.current.send(`STOP|${receiver}`);
     setMessageText("");
@@ -121,12 +117,12 @@ export default function App() {
     if (!wsRef.current || !receiver) return;
 
     wsRef.current.send(`TYPE|${receiver}`);
+
     if (typingTimeout.current) clearTimeout(typingTimeout.current);
 
-    typingTimeout.current = window.setTimeout(
-      () => wsRef.current?.send(`STOP|${receiver}`),
-      800
-    );
+    typingTimeout.current = window.setTimeout(() => {
+      wsRef.current?.send(`STOP|${receiver}`);
+    }, 800);
   };
 
   const isOnline = onlineUsers.has(receiver);
@@ -155,22 +151,22 @@ export default function App() {
 
         <div className="status">
           <span className={`status-dot ${isOnline ? "online" : "offline"}`} />
-          {receiver ? (isOnline ? "Online" : "Offline") : "—"}
+          {isOnline ? "Online" : "Offline"}
         </div>
 
         <div className="messages">
           {messages.map((m) => (
-            <div key={m.id} className={`msg ${m.sender === username ? "me" : "other"}`}>
+            <div
+              key={m.id}
+              className={`msg ${m.sender === username ? "me" : "other"}`}
+            >
               <div className="bubble">
-                <div className="text">{m.text}</div>
-                <div className="meta">
-                  <span className="time">{formatTime(m.timestamp)}</span>
-                  {m.sender === username && (
-                    <span className={`tick ${m.status === "seen" ? "seen" : ""}`}>
-                      {m.status === "seen" ? "✔✔" : "✔"}
-                    </span>
-                  )}
-                </div>
+                {m.text}
+                {m.sender === username && (
+                  <span className={`tick ${m.status === "seen" ? "seen" : ""}`}>
+                    {m.status === "seen" ? "✔✔" : "✔"}
+                  </span>
+                )}
               </div>
             </div>
           ))}
