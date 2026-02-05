@@ -10,6 +10,7 @@ type Msg = {
   text: string;
   sender: string;
   status: MsgStatus;
+  timestamp: string;
 };
 
 export default function App() {
@@ -26,11 +27,20 @@ export default function App() {
   const typingTimeout = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Auto scroll
+  // ---------- AUTO SCROLL ----------
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const formatTime = (ts: string) => {
+    const date = new Date(ts);
+    return date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  // ---------- CONNECT ----------
   const connect = () => {
     if (!username) return;
 
@@ -48,7 +58,7 @@ export default function App() {
     ws.onmessage = (event) => {
       const data = event.data;
 
-      // -------- STATUS --------
+      // ---------- STATUS ----------
       if (data.startsWith("STATUS|")) {
         const [, user, state] = data.split("|");
 
@@ -60,16 +70,18 @@ export default function App() {
         return;
       }
 
-      // -------- READ --------
+      // ---------- READ ----------
       if (data.startsWith("READ|")) {
         const id = Number(data.split("|")[1]);
         setMessages((prev) =>
-          prev.map((m) => (m.id === id ? { ...m, status: "seen" } : m))
+          prev.map((m) =>
+            m.id === id ? { ...m, status: "seen" } : m
+          )
         );
         return;
       }
 
-      // -------- TYPING --------
+      // ---------- TYPING ----------
       if (data.startsWith("TYPING|")) {
         setTypingText(`${data.split("|")[1]} is typing...`);
         return;
@@ -80,9 +92,9 @@ export default function App() {
         return;
       }
 
-      // -------- MESSAGE --------
+      // ---------- MESSAGE ----------
       if (data.startsWith("MSG|")) {
-        const [, id, sender, , text] = data.split("|");
+        const [, id, sender, , text, timestamp] = data.split("|");
         const msgId = Number(id);
 
         setMessages((prev) => {
@@ -94,6 +106,7 @@ export default function App() {
               id: msgId,
               sender,
               text,
+              timestamp,
               status: sender === username ? "sent" : "seen",
             },
           ];
@@ -106,6 +119,7 @@ export default function App() {
     };
   };
 
+  // ---------- SEND MESSAGE ----------
   const sendMessage = () => {
     if (!wsRef.current || !receiver || !messageText) return;
     wsRef.current.send(`MSG|${receiver}|${messageText}`);
@@ -113,6 +127,7 @@ export default function App() {
     setMessageText("");
   };
 
+  // ---------- TYPING ----------
   const handleTyping = () => {
     if (!wsRef.current || !receiver) return;
 
@@ -161,12 +176,16 @@ export default function App() {
               className={`msg ${m.sender === username ? "me" : "other"}`}
             >
               <div className="bubble">
-                {m.text}
-                {m.sender === username && (
-                  <span className={`tick ${m.status === "seen" ? "seen" : ""}`}>
-                    {m.status === "seen" ? "✔✔" : "✔"}
-                  </span>
-                )}
+                <div className="text">{m.text}</div>
+
+                <div className="meta">
+                  <span className="time">{formatTime(m.timestamp)}</span>
+                  {m.sender === username && (
+                    <span className={`tick ${m.status === "seen" ? "seen" : ""}`}>
+                      {m.status === "seen" ? "✔✔" : "✔"}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           ))}

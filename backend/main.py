@@ -25,14 +25,15 @@ CREATE TABLE IF NOT EXISTS messages (
     sender TEXT NOT NULL,
     receiver TEXT NOT NULL,
     message TEXT NOT NULL,
-    read INTEGER DEFAULT 0
+    read INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )
 """)
 conn.commit()
 
 db_lock = asyncio.Lock()
 
-# ---------------- PRESENCE ----------------
+# ---------------- PRESENCE (MULTI-TAB SAFE) ----------------
 active_connections: Dict[str, Set[WebSocket]] = {}
 
 # ---------------- WEBSOCKET ----------------
@@ -47,14 +48,13 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
 
     active_connections[username].add(websocket)
 
-    # ---- BROADCAST ONLINE (only first socket) ----
+    # ---------- PRESENCE SYNC ----------
     if first_connection:
         for user, sockets in active_connections.items():
             if user != username:
                 for ws in sockets:
                     await ws.send_text(f"STATUS|{username}|online")
 
-    # ---- SEND CURRENT ONLINE USERS ----
     for user in active_connections:
         if user != username:
             await websocket.send_text(f"STATUS|{user}|online")
@@ -65,7 +65,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
             parts = data.split("|")
             action = parts[0]
 
-            # -------- TYPING --------
+            # ---------- TYPING ----------
             if action == "TYPE":
                 receiver = parts[1]
                 if receiver in active_connections:
@@ -78,7 +78,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     for ws in active_connections[receiver]:
                         await ws.send_text(f"STOP|{username}")
 
-            # -------- MESSAGE --------
+            # ---------- MESSAGE ----------
             elif action == "MSG":
                 receiver = parts[1]
                 message = parts[2]
@@ -91,18 +91,24 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     conn.commit()
                     msg_id = cursor.lastrowid
 
-                payload = f"MSG|{msg_id}|{username}|{receiver}|{message}"
+                    cursor.execute(
+                        "SELECT created_at FROM messages WHERE id = ?",
+                        (msg_id,)
+                    )
+                    timestamp = cursor.fetchone()[0]
 
-                # Send to sender
+                payload = f"MSG|{msg_id}|{username}|{receiver}|{message}|{timestamp}"
+
+                # Send to sender (all tabs)
                 for ws in active_connections[username]:
                     await ws.send_text(payload)
 
-                # Send to receiver (if online)
+                # Send to receiver if online
                 if receiver in active_connections:
                     for ws in active_connections[receiver]:
                         await ws.send_text(payload)
 
-            # -------- SEEN --------
+            # ---------- SEEN ----------
             elif action == "SEEN":
                 msg_id = int(parts[1])
 
@@ -126,12 +132,11 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     except WebSocketDisconnect:
         pass
     finally:
-        # -------- CLEANUP --------
+        # ---------- CLEANUP ----------
         active_connections[username].remove(websocket)
 
         if not active_connections[username]:
             del active_connections[username]
-
             for sockets in active_connections.values():
                 for ws in sockets:
                     await ws.send_text(f"STATUS|{username}|offline")
