@@ -15,42 +15,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------- DATABASE (FIXED) ----------------
+# ---------------- DATABASE ----------------
 conn = sqlite3.connect("chat.db", check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sender TEXT NOT NULL,
-    receiver TEXT NOT NULL,
-    message TEXT NOT NULL,
-    read INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)
-""")
-conn.commit()
-
+conn.row_factory = sqlite3.Row  # safer access
 db_lock = asyncio.Lock()
+
+with conn:
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender TEXT NOT NULL,
+        receiver TEXT NOT NULL,
+        message TEXT NOT NULL,
+        read INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
 
 # ---------------- PRESENCE ----------------
 active_connections: Dict[str, Set[WebSocket]] = {}
+
+# ---------------- HELPERS ----------------
+async def broadcast_to_user(username: str, message: str):
+    for ws in active_connections.get(username, set()):
+        await ws.send_text(message)
 
 # ---------------- WEBSOCKET ----------------
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     await websocket.accept()
 
-    first_connection = False
-    if username not in active_connections:
-        active_connections[username] = set()
-        first_connection = True
+    first_connection = username not in active_connections
+    active_connections.setdefault(username, set()).add(websocket)
 
-    active_connections[username].add(websocket)
-
-    # ---- ONLINE SYNC ----
+    # ---------- ONLINE SYNC ----------
     if first_connection:
-        for user, sockets in active_connections.items():
+        for user, sockets in list(active_connections.items()):
             if user != username:
                 for ws in sockets:
                     await ws.send_text(f"STATUS|{username}|online")
@@ -63,77 +63,71 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
         while True:
             data = await websocket.receive_text()
 
-            # ✅ SAFE SPLIT
-            parts = data.split("|", 2)
-            action = parts[0]
+            # ---- PROTOCOL PARSING ----
+            if "|" not in data:
+                continue
+
+            command = data.split("|", 1)[0]
 
             # ---------- TYPING ----------
-            if action == "TYPE" and len(parts) == 2:
-                receiver = parts[1]
-                if receiver in active_connections:
-                    for ws in active_connections[receiver]:
-                        await ws.send_text(f"TYPING|{username}")
+            if command == "TYPE":
+                _, receiver = data.split("|", 1)
+                await broadcast_to_user(receiver, f"TYPING|{username}")
 
-            elif action == "STOP" and len(parts) == 2:
-                receiver = parts[1]
-                if receiver in active_connections:
-                    for ws in active_connections[receiver]:
-                        await ws.send_text(f"STOP|{username}")
+            elif command == "STOP":
+                _, receiver = data.split("|", 1)
+                await broadcast_to_user(receiver, f"STOP|{username}")
 
             # ---------- MESSAGE ----------
-            elif action == "MSG" and len(parts) == 3:
-                receiver, message = parts[1], parts[2]
+            elif command == "MSG":
+                _, rest = data.split("|", 1)
+                receiver, message = rest.split("|", 1)
 
                 async with db_lock:
-                    cursor.execute(
-                        "INSERT INTO messages (sender, receiver, message, read) VALUES (?, ?, ?, 0)",
+                    cur = conn.cursor()
+                    cur.execute(
+                        "INSERT INTO messages (sender, receiver, message) VALUES (?, ?, ?)",
                         (username, receiver, message)
                     )
                     conn.commit()
-                    msg_id = cursor.lastrowid
+                    msg_id = cur.lastrowid
 
-                    cursor.execute(
+                    cur.execute(
                         "SELECT created_at FROM messages WHERE id = ?",
                         (msg_id,)
                     )
-                    timestamp = cursor.fetchone()[0]
+                    timestamp = cur.fetchone()["created_at"]
 
                 payload = f"MSG|{msg_id}|{username}|{receiver}|{message}|{timestamp}"
 
-                # Send to sender (all tabs)
-                for ws in active_connections.get(username, []):
-                    await ws.send_text(payload)
-
-                # Send to receiver if online
-                for ws in active_connections.get(receiver, []):
-                    await ws.send_text(payload)
+                await broadcast_to_user(username, payload)
+                await broadcast_to_user(receiver, payload)
 
             # ---------- SEEN ----------
-            elif action == "SEEN" and len(parts) == 2:
-                msg_id = int(parts[1])
+            elif command == "SEEN":
+                _, msg_id = data.split("|", 1)
+                msg_id = int(msg_id)
 
                 async with db_lock:
-                    cursor.execute(
+                    cur = conn.cursor()
+                    cur.execute(
                         "UPDATE messages SET read = 1 WHERE id = ?",
                         (msg_id,)
                     )
                     conn.commit()
 
-                    cursor.execute(
+                    cur.execute(
                         "SELECT sender FROM messages WHERE id = ?",
                         (msg_id,)
                     )
-                    row = cursor.fetchone()
+                    row = cur.fetchone()
 
                 if row:
-                    sender = row[0]
-                    for ws in active_connections.get(sender, []):
-                        await ws.send_text(f"READ|{msg_id}")
+                    await broadcast_to_user(row["sender"], f"READ|{msg_id}")
 
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        # 🔥 NEVER CRASH THE SOCKET SILENTLY
         print("WebSocket error:", e)
 
     finally:
@@ -142,6 +136,6 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
 
         if not active_connections[username]:
             del active_connections[username]
-            for sockets in active_connections.values():
+            for sockets in list(active_connections.values()):
                 for ws in sockets:
                     await ws.send_text(f"STATUS|{username}|offline")

@@ -14,6 +14,7 @@ type Msg = {
 };
 
 export default function App() {
+  // ---------------- STATE ----------------
   const [username, setUsername] = useState("");
   const [receiver, setReceiver] = useState("");
   const [connected, setConnected] = useState(false);
@@ -23,15 +24,17 @@ export default function App() {
   const [typingText, setTypingText] = useState("");
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
 
+  // ---------------- REFS ----------------
   const wsRef = useRef<WebSocket | null>(null);
   const typingTimeout = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // ---------- AUTO SCROLL ----------
+  // ---------------- AUTO SCROLL ----------------
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // ---------------- TIME FORMAT ----------------
   const formatTime = (ts: string) => {
     const date = new Date(ts);
     return date.toLocaleTimeString([], {
@@ -40,14 +43,16 @@ export default function App() {
     });
   };
 
-  // ---------- CONNECT ----------
+  // ---------------- CONNECT ----------------
   const connect = () => {
-    if (!username) return;
+    if (!username || connected) return;
 
     const ws = new WebSocket(`${WS_BASE}/ws/${username}`);
     wsRef.current = ws;
 
-    ws.onopen = () => setConnected(true);
+    ws.onopen = () => {
+      setConnected(true);
+    };
 
     ws.onclose = () => {
       setConnected(false);
@@ -55,10 +60,14 @@ export default function App() {
       setOnlineUsers(new Set());
     };
 
-    ws.onmessage = (event) => {
-      const data = event.data;
+    ws.onerror = () => {
+      ws.close();
+    };
 
-      // ---------- STATUS ----------
+    ws.onmessage = (event) => {
+      const data = event.data as string;
+
+      // ================= STATUS =================
       if (data.startsWith("STATUS|")) {
         const [, user, state] = data.split("|");
 
@@ -70,9 +79,10 @@ export default function App() {
         return;
       }
 
-      // ---------- READ ----------
+      // ================= READ =================
       if (data.startsWith("READ|")) {
         const id = Number(data.split("|")[1]);
+
         setMessages((prev) =>
           prev.map((m) =>
             m.id === id ? { ...m, status: "seen" } : m
@@ -81,9 +91,12 @@ export default function App() {
         return;
       }
 
-      // ---------- TYPING ----------
+      // ================= TYPING =================
       if (data.startsWith("TYPING|")) {
-        setTypingText(`${data.split("|")[1]} is typing...`);
+        const user = data.split("|")[1];
+        if (user === receiver) {
+          setTypingText(`${user} is typing...`);
+        }
         return;
       }
 
@@ -92,9 +105,11 @@ export default function App() {
         return;
       }
 
-      // ---------- MESSAGE ----------
+      // ================= MESSAGE =================
       if (data.startsWith("MSG|")) {
-        const [, id, sender, , text, timestamp] = data.split("|");
+        // MSG|id|sender|receiver|message|timestamp
+        const [, id, sender, , rest] = data.split("|", 5);
+        const [text, timestamp] = rest.split("|", 2);
         const msgId = Number(id);
 
         setMessages((prev) => {
@@ -112,6 +127,7 @@ export default function App() {
           ];
         });
 
+        // If I received this message, tell backend I have SEEN it
         if (sender !== username) {
           wsRef.current?.send(`SEEN|${msgId}`);
         }
@@ -119,34 +135,44 @@ export default function App() {
     };
   };
 
-  // ---------- SEND MESSAGE ----------
+  // ---------------- SEND MESSAGE ----------------
   const sendMessage = () => {
-    if (!wsRef.current || !receiver || !messageText) return;
+    if (!wsRef.current || !receiver || !messageText.trim()) return;
+
     wsRef.current.send(`MSG|${receiver}|${messageText}`);
     wsRef.current.send(`STOP|${receiver}`);
     setMessageText("");
   };
 
-  // ---------- TYPING ----------
+  // ---------------- TYPING ----------------
   const handleTyping = () => {
     if (!wsRef.current || !receiver) return;
 
     wsRef.current.send(`TYPE|${receiver}`);
 
-    if (typingTimeout.current) clearTimeout(typingTimeout.current);
+    if (typingTimeout.current) {
+      clearTimeout(typingTimeout.current);
+    }
 
     typingTimeout.current = window.setTimeout(() => {
       wsRef.current?.send(`STOP|${receiver}`);
     }, 800);
   };
 
+  // ---------------- RECEIVER CHANGE CLEANUP ----------------
+  useEffect(() => {
+    setTypingText("");
+  }, [receiver]);
+
   const isOnline = onlineUsers.has(receiver);
 
+  // ---------------- UI ----------------
   return (
     <div className="app-root">
       <div className="chat-box">
         <h2>Private Chat</h2>
 
+        {/* USERNAME */}
         <input
           placeholder="Your username"
           value={username}
@@ -158,17 +184,20 @@ export default function App() {
           {connected ? "Connected" : "Join"}
         </button>
 
+        {/* RECEIVER */}
         <input
           placeholder="Chat with (username)"
           value={receiver}
           onChange={(e) => setReceiver(e.target.value)}
         />
 
+        {/* ONLINE STATUS */}
         <div className="status">
           <span className={`status-dot ${isOnline ? "online" : "offline"}`} />
-          {isOnline ? "Online" : "Offline"}
+          {receiver ? (isOnline ? "Online" : "Offline") : "—"}
         </div>
 
+        {/* MESSAGES */}
         <div className="messages">
           {messages.map((m) => (
             <div
@@ -192,8 +221,10 @@ export default function App() {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* TYPING */}
         <div className="typing">{typingText}</div>
 
+        {/* INPUT */}
         <input
           placeholder="Type message..."
           value={messageText}
