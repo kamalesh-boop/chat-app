@@ -17,7 +17,7 @@ app.add_middleware(
 
 # ---------------- DATABASE ----------------
 conn = sqlite3.connect("chat.db", check_same_thread=False)
-conn.row_factory = sqlite3.Row  # safer access
+conn.row_factory = sqlite3.Row
 db_lock = asyncio.Lock()
 
 with conn:
@@ -36,9 +36,9 @@ with conn:
 active_connections: Dict[str, Set[WebSocket]] = {}
 
 # ---------------- HELPERS ----------------
-async def broadcast_to_user(username: str, message: str):
+async def send_to_user(username: str, payload: str):
     for ws in active_connections.get(username, set()):
-        await ws.send_text(message)
+        await ws.send_text(payload)
 
 # ---------------- WEBSOCKET ----------------
 @app.websocket("/ws/{username}")
@@ -48,7 +48,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     first_connection = username not in active_connections
     active_connections.setdefault(username, set()).add(websocket)
 
-    # ---------- ONLINE SYNC ----------
+    # ---- PRESENCE SYNC ----
     if first_connection:
         for user, sockets in list(active_connections.items()):
             if user != username:
@@ -63,24 +63,25 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
         while True:
             data = await websocket.receive_text()
 
-            # ---- PROTOCOL PARSING ----
             if "|" not in data:
                 continue
 
-            command = data.split("|", 1)[0]
+            command, rest = data.split("|", 1)
 
             # ---------- TYPING ----------
             if command == "TYPE":
-                _, receiver = data.split("|", 1)
-                await broadcast_to_user(receiver, f"TYPING|{username}")
+                receiver = rest
+                await send_to_user(receiver, f"TYPING|{username}")
 
             elif command == "STOP":
-                _, receiver = data.split("|", 1)
-                await broadcast_to_user(receiver, f"STOP|{username}")
+                receiver = rest
+                await send_to_user(receiver, f"STOP|{username}")
 
             # ---------- MESSAGE ----------
             elif command == "MSG":
-                _, rest = data.split("|", 1)
+                if "|" not in rest:
+                    continue  # malformed
+
                 receiver, message = rest.split("|", 1)
 
                 async with db_lock:
@@ -100,13 +101,15 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
 
                 payload = f"MSG|{msg_id}|{username}|{receiver}|{message}|{timestamp}"
 
-                await broadcast_to_user(username, payload)
-                await broadcast_to_user(receiver, payload)
+                await send_to_user(username, payload)
+                await send_to_user(receiver, payload)
 
             # ---------- SEEN ----------
             elif command == "SEEN":
-                _, msg_id = data.split("|", 1)
-                msg_id = int(msg_id)
+                try:
+                    msg_id = int(rest)
+                except ValueError:
+                    continue
 
                 async with db_lock:
                     cur = conn.cursor()
@@ -123,7 +126,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     row = cur.fetchone()
 
                 if row:
-                    await broadcast_to_user(row["sender"], f"READ|{msg_id}")
+                    await send_to_user(row["sender"], f"READ|{msg_id}")
 
     except WebSocketDisconnect:
         pass
@@ -131,7 +134,6 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
         print("WebSocket error:", e)
 
     finally:
-        # ---------- CLEANUP ----------
         active_connections[username].discard(websocket)
 
         if not active_connections[username]:
